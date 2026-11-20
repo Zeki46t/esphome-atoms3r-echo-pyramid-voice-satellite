@@ -101,3 +101,9 @@ Based on M5Stack's example configuration and external components in
 ESPHome's official voice satellite examples.
 
 Written with help from Claude (Anthropic).
+
+## License
+
+[MIT](LICENSE). Portions are derived from M5Stack's
+[esphome-yaml](https://github.com/m5stack/esphome-yaml) (also MIT, copyright m5stack), whose
+notice is kept in the license file.
