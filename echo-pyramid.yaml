@@ -243,12 +243,25 @@ media_player:
                   - wait_until:
                       - not:
                           voice_assistant.is_running:
+      # User-started media playback (not the wake chime): show the muted display
       - if:
           condition:
-            not:
-              voice_assistant.is_running:
+            and:
+              - not:
+                  voice_assistant.is_running:
+              - lambda: return id(voice_assistant_phase) != ${voice_assist_listening_phase_id};
           then:
             - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
+            - script.execute: draw_display
+      # The assistant's reply audio has started: switch thinking -> replying now,
+      # so the screen and lights match what you hear
+      - if:
+          condition:
+            and:
+              - voice_assistant.is_running:
+              - lambda: return id(voice_assistant_phase) == ${voice_assist_thinking_phase_id};
+          then:
+            - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
             - script.execute: draw_display
     on_idle:
       - if:
@@ -257,8 +270,14 @@ media_player:
               voice_assistant.is_running:
           then:
             - script.execute: start_wake_word
-            - script.execute: set_idle_or_mute_phase
-            - script.execute: draw_display
+            # Keep the "listening" display while the wake chime ends and the
+            # pipeline is starting
+            - if:
+                condition:
+                  lambda: return id(voice_assistant_phase) != ${voice_assist_listening_phase_id};
+                then:
+                  - script.execute: set_idle_or_mute_phase
+                  - script.execute: draw_display
 
 switch:
   # NS4150B speaker amp enable
@@ -417,6 +436,9 @@ micro_wake_word:
       id: hey_mycroft
   vad:
   on_wake_word_detected:
+    # Immediate feedback on the screen and lights, before the wake chime plays
+    - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
+    - script.execute: draw_display
     - script.execute:
         id: play_sound
         priority: true
@@ -433,6 +455,21 @@ micro_wake_word:
                 speaker.is_playing:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
+    # Safety net: if the assistant never started (e.g. Home Assistant not
+    # connected), don't stay on the "listening" display
+    - wait_until:
+        condition:
+          voice_assistant.is_running:
+        timeout: 3s
+    - if:
+        condition:
+          and:
+            - not:
+                voice_assistant.is_running:
+            - lambda: return id(voice_assistant_phase) == ${voice_assist_listening_phase_id};
+        then:
+          - script.execute: set_idle_or_mute_phase
+          - script.execute: draw_display
 
 voice_assistant:
   id: va
@@ -447,9 +484,6 @@ voice_assistant:
     - script.execute: draw_display
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
-    - script.execute: draw_display
-  on_tts_start:
-    - lambda: id(voice_assistant_phase) = ${voice_assist_replying_phase_id};
     - script.execute: draw_display
   on_end:
     - wait_until:
@@ -537,12 +571,20 @@ sensor:
     swipe_timeout_ms: 500
     touch1:
       name: "Touch 1"
+      filters:
+        - deduplicate
     touch2:
       name: "Touch 2"
+      filters:
+        - deduplicate
     touch3:
       name: "Touch 3"
+      filters:
+        - deduplicate
     touch4:
       name: "Touch 4"
+      filters:
+        - deduplicate
     swipe_event:
       name: "Touch Swipe Event"
       entity_category: diagnostic
@@ -726,7 +768,7 @@ light:
   - platform: rgb
     name: "Strip1 Group1"
     id: strip1_group1
-    default_transition_length: 250ms
+    default_transition_length: 0s
     red: rgb1_ch0_red
     green: rgb1_ch0_green
     blue: rgb1_ch0_blue
@@ -734,7 +776,7 @@ light:
   - platform: rgb
     name: "Strip1 Group2"
     id: strip1_group2
-    default_transition_length: 250ms
+    default_transition_length: 0s
     red: rgb1_ch1_red
     green: rgb1_ch1_green
     blue: rgb1_ch1_blue
@@ -742,7 +784,7 @@ light:
   - platform: rgb
     name: "Strip2 Group1"
     id: strip2_group1
-    default_transition_length: 250ms
+    default_transition_length: 0s
     red: rgb2_ch2_red
     green: rgb2_ch2_green
     blue: rgb2_ch2_blue
@@ -750,7 +792,7 @@ light:
   - platform: rgb
     name: "Strip2 Group2"
     id: strip2_group2
-    default_transition_length: 250ms
+    default_transition_length: 0s
     red: rgb2_ch3_red
     green: rgb2_ch3_green
     blue: rgb2_ch3_blue
@@ -1079,16 +1121,16 @@ script:
     then:
       - light.turn_off:
           id: strip1_group1
-          transition_length: 400ms
+          transition_length: 0s
       - light.turn_off:
           id: strip1_group2
-          transition_length: 400ms
+          transition_length: 0s
       - light.turn_off:
           id: strip2_group1
-          transition_length: 400ms
+          transition_length: 0s
       - light.turn_off:
           id: strip2_group2
-          transition_length: 400ms
+          transition_length: 0s
 
   # Pick the strip color from the assistant phase. Overall brightness is
   # controlled by the "RGB Master Brightness" number / right-side swipes.
