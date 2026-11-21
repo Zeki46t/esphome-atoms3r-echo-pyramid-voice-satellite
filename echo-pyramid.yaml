@@ -105,6 +105,7 @@ logger:
   level: DEBUG
   logs:
     sensor: WARN
+    pyramidrgb: INFO   # the component logs every single LED write at DEBUG
 
 captive_portal:
 
@@ -289,7 +290,10 @@ switch:
       mode:
         output: true
     icon: "mdi:volume-high"
-    restore_mode: RESTORE_DEFAULT_ON
+    # Always on at boot, and kept out of voice control: asking Assist to "turn off the
+    # bedroom lights" was also turning this switch off
+    entity_category: config
+    restore_mode: ALWAYS_ON
 
   - platform: template
     name: Mute Microphone
@@ -305,6 +309,16 @@ switch:
       - microphone.mute:
       - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
 
+  # Turn off to skip the wake chime: the assistant then starts listening about
+  # a second sooner
+  - platform: template
+    name: "Wake sound"
+    id: wake_sound
+    icon: "mdi:bell-ring"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
+
   - platform: template
     name: "Status LEDs"
     id: status_leds
@@ -313,6 +327,7 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
     entity_category: config
     on_turn_on:
+      - lambda: id(led_applied_phase) = -1;
       - script.execute: update_leds
     on_turn_off:
       - script.execute: leds_off
@@ -333,6 +348,7 @@ switch:
       - media_player.stop:
           announcement: true
       - script.execute: start_wake_word
+      - lambda: id(led_applied_phase) = -1;
       - script.execute: update_leds
     on_turn_on:
       - script.execute: stop_wake_word
@@ -436,25 +452,38 @@ micro_wake_word:
       id: hey_mycroft
   vad:
   on_wake_word_detected:
-    # Immediate feedback on the screen and lights, before the wake chime plays
+    # Mark "listening" first so the wake chime doesn't trigger the muted display
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_phase_id};
-    - script.execute: draw_display
-    - script.execute:
-        id: play_sound
-        priority: true
-        sound_file: !lambda return const_cast<audio::AudioFile*>(id(wake_word_triggered_sound));
-    - wait_until:
+    # Screen feedback right away (fast); LEDs follow below (slow I2C writes)
+    - display.page.show: listening_page
+    - component.update: atoms3r_lcd
+    - if:
         condition:
-          - media_player.is_announcing:
-        timeout: 0.5s
-    - wait_until:
-        - and:
-            - not:
-                media_player.is_announcing:
-            - not:
-                speaker.is_playing:
+          switch.is_on: wake_sound
+        then:
+          - script.execute:
+              id: play_sound
+              priority: true
+              sound_file: !lambda return const_cast<audio::AudioFile*>(id(wake_word_triggered_sound));
+          # LED writes take ~0.4 s; do them while the chime plays
+          - script.execute: update_leds
+          - wait_until:
+              condition:
+                - media_player.is_announcing:
+              timeout: 0.5s
+          - wait_until:
+              - and:
+                  - not:
+                      media_player.is_announcing:
+                  - not:
+                      speaker.is_playing:
     - voice_assistant.start:
         wake_word: !lambda return wake_word;
+    - if:
+        condition:
+          switch.is_off: wake_sound
+        then:
+          - script.execute: update_leds
     # Safety net: if the assistant never started (e.g. Home Assistant not
     # connected), don't stay on the "listening" display
     - wait_until:
@@ -560,6 +589,11 @@ globals:
     type: float
     restore_value: true
     initial_value: '0.3'
+  # Phase the strip LEDs were last set for (-1 = force the next update)
+  - id: led_applied_phase
+    type: int
+    restore_value: false
+    initial_value: "-1"
 
 # ---------------------------------------------------------------- Touch / LEDs
 sensor:
@@ -1025,7 +1059,6 @@ script:
 
   - id: draw_display
     then:
-      - script.execute: update_leds
       - logger.log:
           level: VERBOSE   # hidden at the default DEBUG level; set logger level to VERBOSE to see it
           format: "draw_display: phase=%d init=%d wifi=%d"
@@ -1075,6 +1108,8 @@ script:
           else:
             - display.page.show: initializing_page
             - component.update: atoms3r_lcd
+      # LEDs last: each color change takes ~0.4 s of slow I2C writes
+      - script.execute: update_leds
 
   # Brief on-screen volume bar after a swipe, then back to the normal page
   - id: show_volume_bar
@@ -1151,6 +1186,13 @@ script:
                 g: 0.6
                 b: 0.0
             - script.stop: update_leds
+      # Nothing to do if the strips already show this phase
+      - if:
+          condition:
+            lambda: return id(led_applied_phase) == id(voice_assistant_phase);
+          then:
+            - script.stop: update_leds
+      - lambda: id(led_applied_phase) = id(voice_assistant_phase);
       - if:
           condition:
             lambda: return id(voice_assistant_phase) == ${voice_assist_listening_phase_id};
