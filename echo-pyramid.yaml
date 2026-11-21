@@ -4,30 +4,21 @@
 # Changes from the M5Stack example:
 #  1. Removed the "switch: platform: aw87559" block (not available in the
 #     current M5Stack component; the aw87559 hub entry below is kept).
-#     I2S pins are the original Pyramid pins (LRCLK=8, BCLK=6, DIN=5, DOUT=7).
-#  2. Display model changed from ST7789V to M5STACK-ATOMS3R-GC9107
-#     (the AtomS3R panel is a GC9107, so ST7789V gave a blank screen).
+#  2. Display rebuilt for the newer AtomS3R revision (ST7735 panel); see the
+#     display section and the README for older GC9107 units.
 #  3. Speaker/media player sample rate set to 16000 so it matches the mic
-#     on the shared I2S bus (the original asked for 48000 on a 16000 speaker).
-#  4. Microphone channel set to mono (left) for micro_wake_word / voice_assistant.
-#  5. Removed the unused "stop" and "peppa pig" wake word models (RAM + a
-#     handler that would have started the assistant with the wake word "stop").
-#  6. Casita images replaced with code-drawn animations (sound-pulse rings,
-#     spinner, equalizer) - no image files needed.
+#     on the shared I2S bus (the example asked for 48000 on a 16000 speaker).
+#  4. Microphone channel set to mono (left).
+#  5. Removed the unused "stop" and "peppa pig" wake word models.
+#  6. Casita images replaced with code-drawn animations (no image files).
+#  7. Pyramid RGB strips show the assistant state (switch: "Status LEDs").
+#  8. Volume swipes show an on-screen bar, are capped (see max_volume), and keep the
+#     "Master Volume" entity in sync; volume is restored on boot.
+#  9. Secrets moved to secrets.yaml; diagnostic sensors added.
 
 substitutions:
   name: echo-pyramid
   friendly_name: Echo-Pyramid
-
-  # Casita images
-  loading_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/loading_320_240.png
-  idle_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/idle_320_240.png
-  listening_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/listening_320_240.png
-  thinking_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/thinking_320_240.png
-  replying_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/replying_320_240.png
-  error_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/casita/error_320_240.png
-  error_no_wifi_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/error_box_illustrations/error-no-wifi.png
-  error_no_ha_illustration_file: https://github.com/esphome/wake-word-voice-assistants/raw/main/error_box_illustrations/error-no-ha.png
 
   # Fonts
   mdi_webfont_file: https://raw.githubusercontent.com/Templarian/MaterialDesign-Webfont/master/fonts/materialdesignicons-webfont.ttf
@@ -37,13 +28,8 @@ substitutions:
   timer_finished_sound_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/timer_finished.flac
   error_cloud_expired_file: https://github.com/esphome/home-assistant-voice-pe/raw/dev/sounds/error_cloud_expired.mp3
 
-  # Background colors
-  loading_illustration_background_color: '000000'
-  idle_illustration_background_color: '000000'
-  listening_illustration_background_color: 'FFFFFF'
-  thinking_illustration_background_color: 'FFFFFF'
-  replying_illustration_background_color: 'FFFFFF'
-  error_illustration_background_color: '000000'
+  # Highest volume the speaker is allowed to reach (0.0 - 1.0)
+  max_volume: "0.4"
 
   # Phases of the voice assistant
   voice_assist_idle_phase_id: "1"
@@ -60,15 +46,26 @@ esphome:
   friendly_name: ${friendly_name}
   min_version: 2025.11.3
   on_boot:
-    priority: 600
-    then:
-      - delay: 30s
-      - if:
-          condition:
-            lambda: return id(init_in_progress);
-          then:
-            - lambda: id(init_in_progress) = false;
-            - script.execute: draw_display
+    - priority: 600
+      then:
+        # Fallback: leave the "initializing" screen after 30 s even if Home
+        # Assistant never connects
+        - delay: 30s
+        - if:
+            condition:
+              lambda: return id(init_in_progress);
+            then:
+              - lambda: id(init_in_progress) = false;
+              - script.execute: draw_display
+    - priority: -100
+      then:
+        # Apply the saved volume (otherwise the player starts at volume_initial
+        # while Home Assistant shows the saved value) and sync the entity
+        - lambda: id(current_volume) = std::min(id(current_volume), (float) ${max_volume});
+        - media_player.volume_set:
+            id: echo_pyramid_player
+            volume: !lambda return id(current_volume);
+        - lambda: id(master_volume).publish_state(id(current_volume));
 
 esp32:
   variant: esp32s3
@@ -290,6 +287,18 @@ switch:
       - lambda: id(voice_assistant_phase) = ${voice_assist_muted_phase_id};
 
   - platform: template
+    name: "Status LEDs"
+    id: status_leds
+    icon: "mdi:led-strip-variant"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
+    on_turn_on:
+      - script.execute: update_leds
+    on_turn_off:
+      - script.execute: leds_off
+
+  - platform: template
     id: timer_ringing
     optimistic: true
     internal: true
@@ -305,8 +314,14 @@ switch:
       - media_player.stop:
           announcement: true
       - script.execute: start_wake_word
+      - script.execute: update_leds
     on_turn_on:
       - script.execute: stop_wake_word
+      - script.execute:
+          id: set_led_color
+          r: 1.0
+          g: 0.6
+          b: 0.0
       - lambda: |-
           id(echo_pyramid_player)
             ->make_call()
@@ -543,7 +558,7 @@ sensor:
               if (ev == 1 || ev == 2) {
                 float v = id(current_volume);
                 if (ev == 1) {
-                  v = std::min(1.0f, v + volume_step);
+                  v = std::min((float) ${max_volume}, v + volume_step);
                 } else {
                   v = std::max(0.0f, v - volume_step);
                 }
@@ -551,6 +566,8 @@ sensor:
                 call.set_volume(v);
                 call.perform();
                 id(current_volume) = v;
+                id(master_volume).publish_state(v);
+                id(show_volume_bar).execute();
               } else if (ev == 3 || ev == 4) {
                 float b = id(rgb_master_brightness).state;
                 if (ev == 3) {
@@ -563,6 +580,19 @@ sensor:
                 id(pyramid_rgb2).set_strip_brightness(2, b8);
                 id(rgb_master_brightness).publish_state(b);
               }
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+    entity_category: diagnostic
+  - platform: uptime
+    name: "Uptime"
+    entity_category: diagnostic
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: "IP Address"
+      entity_category: diagnostic
 
 lp5562:
   id: lp5562_led
@@ -588,7 +618,7 @@ number:
     id: master_volume
     icon: "mdi:volume-high"
     min_value: 0.0
-    max_value: 0.4
+    max_value: ${max_volume}
     step: 0.01
     restore_value: true
     initial_value: 0.3
@@ -683,37 +713,48 @@ output:
     channel: 3
     color: blue
 
+# The four strip lights below are driven by the "Status LEDs" switch (assistant
+# state colors). Turn that switch off to use them as normal lights.
 light:
   - platform: monochromatic
     name: "LCD Backlight"
+    id: lcd_backlight
     output: lp5562_white_channel
     icon: "mdi:television"
     default_transition_length: 0s
     restore_mode: ALWAYS_ON
   - platform: rgb
     name: "Strip1 Group1"
+    id: strip1_group1
+    default_transition_length: 250ms
     red: rgb1_ch0_red
     green: rgb1_ch0_green
     blue: rgb1_ch0_blue
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: ALWAYS_OFF
   - platform: rgb
     name: "Strip1 Group2"
+    id: strip1_group2
+    default_transition_length: 250ms
     red: rgb1_ch1_red
     green: rgb1_ch1_green
     blue: rgb1_ch1_blue
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: ALWAYS_OFF
   - platform: rgb
     name: "Strip2 Group1"
+    id: strip2_group1
+    default_transition_length: 250ms
     red: rgb2_ch2_red
     green: rgb2_ch2_green
     blue: rgb2_ch2_blue
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: ALWAYS_OFF
   - platform: rgb
     name: "Strip2 Group2"
+    id: strip2_group2
+    default_transition_length: 250ms
     red: rgb2_ch3_red
     green: rgb2_ch3_green
     blue: rgb2_ch3_blue
-    restore_mode: RESTORE_DEFAULT_ON
+    restore_mode: ALWAYS_OFF
 
 # ---------------------------------------------------------------- Display
 spi:
@@ -859,6 +900,19 @@ display:
           it.fill(Color::BLACK);
           it.printf(it.get_width() / 2, it.get_height() / 2, id(mdi_icon_96), Color::WHITE, TextAlign::CENTER, "%s", "\U000F036D");
 
+      # VOLUME: bar shown for 1.5 s after a volume swipe
+      - id: volume_page
+        lambda: |-
+          it.fill(Color::BLACK);
+          float f = id(current_volume) / ${max_volume};
+          if (f < 0.0f) f = 0.0f;
+          if (f > 1.0f) f = 1.0f;
+          it.rectangle(14, 58, 100, 14, Color(110, 110, 110));
+          it.filled_rectangle(16, 60, (int)(96 * f), 10, Color(0, 200, 255));
+          for (int i = 0; i <= 10; i++) {
+            it.line(16 + i * 9 + (i == 10 ? -1 : 0), 76, 16 + i * 9 + (i == 10 ? -1 : 0), 80, Color(110, 110, 110));
+          }
+
 script:
   - id: start_wake_word
     then:
@@ -929,7 +983,9 @@ script:
 
   - id: draw_display
     then:
+      - script.execute: update_leds
       - logger.log:
+          level: VERBOSE   # hidden at the default DEBUG level; set logger level to VERBOSE to see it
           format: "draw_display: phase=%d init=%d wifi=%d"
           args: ['id(voice_assistant_phase)', 'id(init_in_progress) ? 1 : 0', 'wifi::global_wifi_component->is_connected() ? 1 : 0']
       - if:
@@ -977,6 +1033,137 @@ script:
           else:
             - display.page.show: initializing_page
             - component.update: atoms3r_lcd
+
+  # Brief on-screen volume bar after a swipe, then back to the normal page
+  - id: show_volume_bar
+    mode: restart
+    then:
+      - display.page.show: volume_page
+      - component.update: atoms3r_lcd
+      - delay: 1500ms
+      - script.execute: draw_display
+
+  # Set all four Pyramid strips to one color (values 0.0 - 1.0)
+  - id: set_led_color
+    parameters:
+      r: float
+      g: float
+      b: float
+    then:
+      - light.turn_on:
+          id: strip1_group1
+          red: !lambda return r;
+          green: !lambda return g;
+          blue: !lambda return b;
+          brightness: 100%
+      - light.turn_on:
+          id: strip1_group2
+          red: !lambda return r;
+          green: !lambda return g;
+          blue: !lambda return b;
+          brightness: 100%
+      - light.turn_on:
+          id: strip2_group1
+          red: !lambda return r;
+          green: !lambda return g;
+          blue: !lambda return b;
+          brightness: 100%
+      - light.turn_on:
+          id: strip2_group2
+          red: !lambda return r;
+          green: !lambda return g;
+          blue: !lambda return b;
+          brightness: 100%
+
+  - id: leds_off
+    then:
+      - light.turn_off:
+          id: strip1_group1
+          transition_length: 400ms
+      - light.turn_off:
+          id: strip1_group2
+          transition_length: 400ms
+      - light.turn_off:
+          id: strip2_group1
+          transition_length: 400ms
+      - light.turn_off:
+          id: strip2_group2
+          transition_length: 400ms
+
+  # Pick the strip color from the assistant phase. Overall brightness is
+  # controlled by the "RGB Master Brightness" number / right-side swipes.
+  - id: update_leds
+    then:
+      - if:
+          condition:
+            switch.is_off: status_leds
+          then:
+            - script.stop: update_leds
+      - if:
+          condition:
+            switch.is_on: timer_ringing
+          then:
+            - script.execute:
+                id: set_led_color
+                r: 1.0
+                g: 0.6
+                b: 0.0
+            - script.stop: update_leds
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == ${voice_assist_listening_phase_id};
+          then:
+            - script.execute:
+                id: set_led_color
+                r: 0.0
+                g: 0.8
+                b: 1.0
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == ${voice_assist_thinking_phase_id};
+          then:
+            - script.execute:
+                id: set_led_color
+                r: 1.0
+                g: 0.5
+                b: 0.1
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == ${voice_assist_replying_phase_id};
+          then:
+            - script.execute:
+                id: set_led_color
+                r: 0.3
+                g: 1.0
+                b: 0.45
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == ${voice_assist_error_phase_id};
+          then:
+            - script.execute:
+                id: set_led_color
+                r: 1.0
+                g: 0.0
+                b: 0.0
+      - if:
+          condition:
+            lambda: return id(voice_assistant_phase) == ${voice_assist_muted_phase_id};
+          then:
+            - script.execute:
+                id: set_led_color
+                r: 0.35
+                g: 0.0
+                b: 0.0
+      # Idle / not ready: strips off
+      - if:
+          condition:
+            lambda: |-
+              int p = id(voice_assistant_phase);
+              return p != ${voice_assist_listening_phase_id} && p != ${voice_assist_thinking_phase_id} &&
+                     p != ${voice_assist_replying_phase_id} && p != ${voice_assist_error_phase_id} &&
+                     p != ${voice_assist_muted_phase_id};
+          then:
+            - script.execute: leds_off
 
 font:
   - file: ${mdi_webfont_file}
