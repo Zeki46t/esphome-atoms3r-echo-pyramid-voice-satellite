@@ -572,19 +572,19 @@ sensor:
     touch1:
       name: "Touch 1"
       filters:
-        - deduplicate
+        - delta: 0.5
     touch2:
       name: "Touch 2"
       filters:
-        - deduplicate
+        - delta: 0.5
     touch3:
       name: "Touch 3"
       filters:
-        - deduplicate
+        - delta: 0.5
     touch4:
       name: "Touch 4"
       filters:
-        - deduplicate
+        - delta: 0.5
     swipe_event:
       name: "Touch Swipe Event"
       entity_category: diagnostic
