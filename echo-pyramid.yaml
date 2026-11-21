@@ -514,6 +514,17 @@ voice_assistant:
   on_stt_vad_end:
     - lambda: id(voice_assistant_phase) = ${voice_assist_thinking_phase_id};
     - script.execute: draw_display
+  # Release the shared I2S bus early. If the wake word is still running when a
+  # fast reply starts, the speaker fails with "Parent bus is busy" and retries
+  # a second later. (On-device wake word only; stopping the pipeline here would
+  # be wrong in "In Home Assistant" mode.)
+  on_stt_end:
+    - if:
+        condition:
+          lambda: |-
+            return id(wake_word_engine_location).current_option() == "On device";
+        then:
+          - micro_wake_word.stop:
   on_end:
     - wait_until:
         condition:
