@@ -11,7 +11,10 @@ This started from M5Stack's example YAML, which compiled but gave a blank screen
 - Wake word sensitivity and engine location selectable from Home Assistant
 - Media player entity, volume control, timer alarm sound
 - Mute microphone switch
-- Touch strip: swipe on the left side for volume, on the right side for RGB brightness
+- **Wake sound** switch to turn the wake chime off for a faster start to listening
+- Pyramid RGB strips show the assistant state (cyan listening, orange thinking, green replying, red error, dim red muted), controlled by a **Status LEDs** switch
+- On-screen volume bar when you swipe the touch strip
+- Touch strip: swipe on the left side for volume (capped at 40%), on the right side for RGB brightness
 - Pyramid RGB strips and LCD backlight exposed as lights
 - Code-drawn screen animations (no image files needed):
 
@@ -34,7 +37,7 @@ This started from M5Stack's example YAML, which compiled but gave a blank screen
 ## Tested with
 
 - ESPHome 2026.10.2
-- Home Assistant 2026.8.2 (Container)
+- Home Assistant 2026.11.1 (Container)
 
 Other versions may work but are untested. This config relies on M5Stack's external components (`aw87559`, `si5351`, `lp5562`, `pyramidrgb`, `pyramidtouch`) from
 [m5stack/esphome-yaml](https://github.com/m5stack/esphome-yaml), loaded from `main`, so their changes can affect it.
@@ -80,6 +83,8 @@ Other display tweaks:
 - Removed the unused `stop` and "hey peppa pig" wake word models.
 - Fixed a compile error on newer ESPHome by casting the sound file pointer to `audio::AudioFile*` where `play_sound` is called.
 - Replaced the screen images with code-drawn animations and updated the display config for the ST7735 panel.
+- Stopped the on-device wake word as soon as speech is recognised, so a fast reply does not hit `Parent bus is busy` on the shared I2S bus.
+- Cut delays caused by slow Pyramid RGB writes (screen is updated first, LEDs only on state changes, per-write logging silenced).
 - Moved the API key, OTA password and fallback hotspot password into `secrets.yaml`.
 
 ## Troubleshooting
@@ -91,6 +96,9 @@ Other display tweaks:
 | `invalid conversion from 'const esphome::audio::AudioFile*' to 'esphome::audio::AudioFile*'` | Use `const_cast<audio::AudioFile*>(id(...))` where `play_sound` is called, as in this config |
 | `Unknown value 'M5STACK-ATOMS3R-ST7735'` | Your ESPHome predates the preset. Use the hand-built display block in this repo |
 | Backlight on, screen black | Wrong screen chip. See the screen section above |
+| Speech is misheard ("battle lights") | Use a larger Whisper model in your speech-to-text add-on (`small` or `medium`) |
+| Slow replies after you finish speaking | Usually the Home Assistant conversation agent, not the device. Use a faster model or rely on local intents |
+| `Parent bus is busy` in the log | Fixed in this config. Make sure you are on the current version |
 | Connects to Home Assistant but no voice features | Check the I2S pins and 16 kHz sample rates match this config, and look for `es7210`/`es8311` errors in the log |
 
 ## Credits
